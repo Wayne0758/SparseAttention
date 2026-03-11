@@ -63,7 +63,7 @@ def fast_select_k_least_changed_tokens_cls(
     k: int,
     *,
     exclude_cls: bool = True,
-    symmetric: bool = True,   # True: row+col 變化都算；False: 只算 row
+    symmetric: bool = True,
     head_reduce: str = "mean" # or "max"
 ):
     # torch.cuda.synchronize()
@@ -79,18 +79,14 @@ def fast_select_k_least_changed_tokens_cls(
     # else:
     #     change = change_per_head.mean(dim=1)         # [B,N]
 
-    # 排除 CLS
     if exclude_cls:
         change[:, 0] = float('inf')
 
-    # 取最小的 k 個（least changed）
     k_eff = N-min(k, N - int(exclude_cls))
-    # topk(largest=False) 比 argsort 更快
     _, keep_idx = torch.topk(change, k_eff, dim=1)
 
     # torch.cuda.synchronize()
     # end = time.time()
-    # print(f"[⏱] fast_select_k_least_changed_tokens 耗時: {end - start:.6f} 秒")
 
     return keep_idx
 
@@ -99,7 +95,7 @@ def fast_select_k_least_changed_tokens_col(
     k: int,
     *,
     exclude_cls: bool = True,
-    symmetric: bool = True,   # True: row+col 變化都算；False: 只算 row
+    symmetric: bool = True,
     head_reduce: str = "mean" # or "max"
 ):
     # torch.cuda.synchronize()
@@ -115,25 +111,21 @@ def fast_select_k_least_changed_tokens_col(
     # else:
     #     change = change_per_head.mean(dim=1)         # [B,N]
 
-    # 排除 CLS
     if exclude_cls:
         change[:, 0] = float('inf')
 
-    # 取最小的 k 個（least changed）
     k_eff = N-min(k, N - int(exclude_cls))
-    # topk(largest=False) 比 argsort 更快
     _, keep_idx = torch.topk(change, k_eff, dim=1)
 
     # torch.cuda.synchronize()
     # end = time.time()
-    # print(f"[⏱] fast_select_k_least_changed_tokens 耗時: {end - start:.6f} 秒")
 
     return keep_idx
 
 def fast_prune_by_keep_idx(x: torch.Tensor, keep_idx: torch.Tensor):
     """
     x:        [B, N, C]
-    keep_idx: [B, K]  已選好的要保留的 token index（若要保留 CLS=0，請先把 0 丟進 keep_idx）
+    keep_idx: [B, K]  pre-selected token indices to keep (include CLS index 0 if needed)
     return:
       x_kept:  [B, K, C]
     """
@@ -141,13 +133,11 @@ def fast_prune_by_keep_idx(x: torch.Tensor, keep_idx: torch.Tensor):
     # start = time.time()
 
     B, N, C = x.shape
-    # keep_idx: [B, K] -> [B, K, 1] 再擴成 [B, K, C]，才能在 dim=1 做 gather
     index = keep_idx.unsqueeze(-1).expand(-1, -1, C)   # [B, K, C]
     x_kept = x.gather(dim=1, index=index)              # [B, K, C]
 
     # torch.cuda.synchronize()
     # end = time.time()
-    # print(f"[⏱] fast_prune_by_keep_idx 耗時: {end - start:.6f} 秒")
 
     return x_kept
 
@@ -155,8 +145,6 @@ import torch
 
 # def normalize_idx_for_heads(idx: torch.Tensor, B: int, H: int, K: int, device, *, name="idx"):
 #     """
-#     idx: [B,K] (shared across heads) 或 [B,H,K] (per-head)
-#     return: [B,H,K]，long dtype、在正確 device
 #     """
 #     if idx.dim() == 2:              # [B, K] -> [B, 1, K] -> [B, H, K]
 #         if idx.shape != (B, K):
@@ -176,7 +164,7 @@ import torch
 def subattn_from_full(attn: torch.Tensor, keep_idx: torch.Tensor) -> torch.Tensor:
     """
     attn:     [B, N, N]
-    keep_idx: [B, K]  （每個 batch 自己的一組要保留的 token 索引）
+    keep_idx: [B, K]  (per-batch indices of tokens to keep)
     return:   [B, K, K]
     """
     # torch.cuda.synchronize()
@@ -195,11 +183,7 @@ def subattn_from_full(attn: torch.Tensor, keep_idx: torch.Tensor) -> torch.Tenso
 
     # torch.cuda.synchronize()
     # end = time.time()
-    # print(f"[⏱] subattn_from_full 耗時: {end - start:.6f} 秒")
 
-    # # === 關鍵修正：重新歸一化 (Renormalization) ===
-    # # 讓每一列的總和重新變回 1
-    # # 加上 1e-6 防止除以 0 (雖然理論上 attention 不會全為 0)
     # attn_sum = attn_KK.sum(dim=-1, keepdim=True) + 1e-6
     # attn_KK = attn_KK / attn_sum
     
@@ -356,29 +340,27 @@ class Block(nn.Module):
         x = res + self.drop_path1(self.ls1(x))
 
         # ── Token pruning: after attention residual, before MLP ──────────────
-        if prune_num > 0:  # 前 8 層做 token pruning，後面幾層維持完整序列
+        if prune_num > 0:
             N_cur = x.shape[1]
             B_cur = x.shape[0]
 
-            # Step 1: col_norm 選 N_cur - prune_num - r 個
-            keep_idx_col = fast_select_k_least_changed_tokens_col(
-                cur_attn, k=prune_num + r,
-                exclude_cls=True, symmetric=True, head_reduce="mean"
-            )
+            # Step 1: CLS attention selects N_cur-prune_num-r-1 tokens from patch tokens only (CLS not counted)
+            cls_attn_patches = cur_attn[:, 0, 1:]  # [B, N_cur-1], CLS excluded
+            _, cls_idx_patch = torch.topk(cls_attn_patches, N_cur - prune_num - r - 1, dim=1, largest=True)
+            cls_idx = cls_idx_patch + 1  # shift to actual indices (index 0 is CLS)
 
-            # Step 2: 排除已選的，從剩餘中用 cls_change 最高的選 r 個
-            cls_change = cur_attn[:, 0, :]
-            # out-of-place scatter (fvcore JIT tracing compatible)
-            fill = torch.ones(B_cur, keep_idx_col.shape[1], dtype=torch.bool, device=x.device)
-            col_mask = torch.zeros(B_cur, N_cur, dtype=torch.bool, device=x.device).scatter(1, keep_idx_col, fill)
-            cls_mask = (torch.arange(N_cur, device=x.device) == 0).unsqueeze(0)  # [1, N_cur]
-            presence = col_mask | cls_mask
-            scores = torch.where(~presence, cls_change,
-                                 torch.full((B_cur, N_cur), float('-inf'), device=x.device))
-            _, cls_extra = torch.topk(scores, r, dim=1, largest=True)
+            # Step 2: col-L4 norm selects remaining r patch tokens
+            col_change = torch.norm(cur_attn, p=4, dim=1)  # [B, N_cur]
+            fill = torch.ones(B_cur, N_cur - prune_num - r - 1, dtype=torch.bool, device=x.device)
+            presence = torch.zeros(B_cur, N_cur, dtype=torch.bool, device=x.device).scatter(1, cls_idx, fill)
+            presence[:, 0] = True  # exclude CLS token
+            col_scores = torch.where(~presence, col_change,
+                                     torch.full((B_cur, N_cur), float('-inf'), device=x.device))
+            _, col_idx = torch.topk(col_scores, r, dim=1, largest=True)
 
-            # Step 3: concat → [B, N_cur - prune_num]
-            keep_idx = torch.cat([keep_idx_col, cls_extra], dim=1)
+            # Step 3: concat CLS + CLS-selected + col-selected → [B, N_cur - prune_num]
+            cls_token_idx = torch.zeros(B_cur, 1, dtype=torch.long, device=x.device)
+            keep_idx = torch.cat([cls_token_idx, cls_idx, col_idx], dim=1)
             x = fast_prune_by_keep_idx(x, keep_idx)
 
         x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
@@ -1045,8 +1027,8 @@ class VisionTransformer(nn.Module):
         if self.grad_checkpointing and not torch.jit.is_scripting():
             x = checkpoint_seq(self.blocks, x)
         else:
-            prune_num = 2
-            r = 4
+            prune_num = 0
+            r = 0
             for blk_id in range(len(self.blocks)):
                 x = self.blocks[blk_id](x, prune_num=prune_num, r=r, blk_id=blk_id)
 

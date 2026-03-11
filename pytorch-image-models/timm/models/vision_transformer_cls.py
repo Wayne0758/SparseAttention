@@ -63,7 +63,7 @@ def fast_select_k_least_changed_tokens(
     k: int,
     *,
     exclude_cls: bool = True,
-    symmetric: bool = True,   # True: row+col 變化都算；False: 只算 row
+    symmetric: bool = True,
     head_reduce: str = "mean" # or "max"
 ):
     # torch.cuda.synchronize()
@@ -79,25 +79,21 @@ def fast_select_k_least_changed_tokens(
     # else:
     #     change = change_per_head.mean(dim=1)         # [B,N]
 
-    # 排除 CLS
     if exclude_cls:
         change[:, 0] = float('inf')
 
-    # 取最小的 k 個（least changed）
     k_eff = N-min(k, N - int(exclude_cls))
-    # topk(largest=False) 比 argsort 更快
     _, keep_idx = torch.topk(change, k_eff, dim=1)
 
     # torch.cuda.synchronize()
     # end = time.time()
-    # print(f"[⏱] fast_select_k_least_changed_tokens 耗時: {end - start:.6f} 秒")
 
     return keep_idx
 
 def fast_prune_by_keep_idx(x: torch.Tensor, keep_idx: torch.Tensor):
     """
     x:        [B, N, C]
-    keep_idx: [B, K]  已選好的要保留的 token index（若要保留 CLS=0，請先把 0 丟進 keep_idx）
+    keep_idx: [B, K]  pre-selected token indices to keep (include CLS index 0 if needed)
     return:
       x_kept:  [B, K, C]
     """
@@ -105,13 +101,11 @@ def fast_prune_by_keep_idx(x: torch.Tensor, keep_idx: torch.Tensor):
     # start = time.time()
 
     B, N, C = x.shape
-    # keep_idx: [B, K] -> [B, K, 1] 再擴成 [B, K, C]，才能在 dim=1 做 gather
     index = keep_idx.unsqueeze(-1).expand(-1, -1, C)   # [B, K, C]
     x_kept = x.gather(dim=1, index=index)              # [B, K, C]
 
     # torch.cuda.synchronize()
     # end = time.time()
-    # print(f"[⏱] fast_prune_by_keep_idx 耗時: {end - start:.6f} 秒")
 
     return x_kept
 
@@ -119,8 +113,6 @@ import torch
 
 # def normalize_idx_for_heads(idx: torch.Tensor, B: int, H: int, K: int, device, *, name="idx"):
 #     """
-#     idx: [B,K] (shared across heads) 或 [B,H,K] (per-head)
-#     return: [B,H,K]，long dtype、在正確 device
 #     """
 #     if idx.dim() == 2:              # [B, K] -> [B, 1, K] -> [B, H, K]
 #         if idx.shape != (B, K):
@@ -140,7 +132,7 @@ import torch
 def subattn_from_full(attn: torch.Tensor, keep_idx: torch.Tensor) -> torch.Tensor:
     """
     attn:     [B, N, N]
-    keep_idx: [B, K]  （每個 batch 自己的一組要保留的 token 索引）
+    keep_idx: [B, K]  (per-batch indices of tokens to keep)
     return:   [B, K, K]
     """
     # torch.cuda.synchronize()
@@ -159,11 +151,7 @@ def subattn_from_full(attn: torch.Tensor, keep_idx: torch.Tensor) -> torch.Tenso
 
     # torch.cuda.synchronize()
     # end = time.time()
-    # print(f"[⏱] subattn_from_full 耗時: {end - start:.6f} 秒")
 
-    # # === 關鍵修正：重新歸一化 (Renormalization) ===
-    # # 讓每一列的總和重新變回 1
-    # # 加上 1e-6 防止除以 0 (雖然理論上 attention 不會全為 0)
     # attn_sum = attn_KK.sum(dim=-1, keepdim=True) + 1e-6
     # attn_KK = attn_KK / attn_sum
     
@@ -991,7 +979,7 @@ class VisionTransformer(nn.Module):
         if self.grad_checkpointing and not torch.jit.is_scripting():
             x = checkpoint_seq(self.blocks, x)
         else:
-            prune_num = 8
+            prune_num = 0
             for blk_id in range(len(self.blocks)):
                 x = self.blocks[blk_id](x, prune_num=prune_num, blk_id=blk_id)
 
