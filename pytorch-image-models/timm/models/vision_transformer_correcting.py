@@ -1027,8 +1027,8 @@ class VisionTransformer(nn.Module):
         if self.grad_checkpointing and not torch.jit.is_scripting():
             x = checkpoint_seq(self.blocks, x)
         else:
-            prune_num = 0
-            r = 0
+            prune_num = 4
+            r = 20
             for blk_id in range(len(self.blocks)):
                 x = self.blocks[blk_id](x, prune_num=prune_num, r=r, blk_id=blk_id)
 

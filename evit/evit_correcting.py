@@ -213,7 +213,7 @@ class Attention(nn.Module):
                 return x, None, None, None, left_tokens
             assert left_tokens >= 1
             attn_mean = attn.mean(dim=1)  # [B, N, N]
-            c = 0.8  # Rescue Ratio
+            c = 0.2  # Rescue Ratio
             r = int(left_tokens * c)
 
             B_cur = B

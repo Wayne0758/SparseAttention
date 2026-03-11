@@ -179,7 +179,7 @@ class LlavaMetaForCausalLM(ABC):
         important_token_num = int(visual_token_num * important_ratio)  # T_imp = T * r
         diverse_token_num = visual_token_num - important_token_num     # T_div = T * (1 - r)
         # CLS-rescue count within the important selection (mirrors vision_transformer_y.py's r)
-        c = 0.8 # Rescue Ratio
+        c = 0.2 # Rescue Ratio
         r_rescue = int(important_token_num * c)
 
         # ── [VisPruner] Select important tokens: CLS first, col-norm second ─────────────────
