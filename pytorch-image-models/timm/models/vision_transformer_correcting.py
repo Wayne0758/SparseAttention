@@ -213,7 +213,7 @@ class Block(nn.Module):
         self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
-    def forward(self, x: torch.Tensor, attn_keep=None, mask=None, prune_num: int = 0, r: int = 0, blk_id: int = 0) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attn_keep=None, mask=None, prune_num: int = 0, c: float = 0, blk_id: int = 0) -> torch.Tensor:
 
         global cur_attn
         res = x
@@ -224,13 +224,15 @@ class Block(nn.Module):
         if prune_num > 0:
             N_cur = x.shape[1]
             B_cur = x.shape[0]
+            keep_num = N_cur - prune_num - 1
+            r = int(keep_num * c)
 
             cls_attn_patches = cur_attn[:, 0, 1:]
-            _, cls_idx_patch = torch.topk(cls_attn_patches, N_cur - prune_num - r - 1, dim=1, largest=True)
+            _, cls_idx_patch = torch.topk(cls_attn_patches, keep_num - r, dim=1, largest=True)
             cls_idx = cls_idx_patch + 1
 
             col_change = torch.norm(cur_attn, p=4, dim=1)
-            fill = torch.ones(B_cur, N_cur - prune_num - r - 1, dtype=torch.bool, device=x.device)
+            fill = torch.ones(B_cur, keep_num - r, dtype=torch.bool, device=x.device)
             presence = torch.zeros(B_cur, N_cur, dtype=torch.bool, device=x.device).scatter(1, cls_idx, fill)
             presence[:, 0] = True
             col_scores = torch.where(~presence, col_change,
@@ -832,9 +834,9 @@ class VisionTransformer(nn.Module):
             x = checkpoint_seq(self.blocks, x)
         else:
             prune_num = 4
-            r = 20
+            c = 0.4
             for blk_id in range(len(self.blocks)):
-                x = self.blocks[blk_id](x, prune_num=prune_num, r=r, blk_id=blk_id)
+                x = self.blocks[blk_id](x, prune_num=prune_num, c=c, blk_id=blk_id)
 
         x = self.norm(x)
         return x
