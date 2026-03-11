@@ -1,16 +1,3 @@
-#    Copyright 2024 Hao Zhang
-#
-#    Licensed under the Apache License, Version 2.0 (the "License");
-#    you may not use this file except in compliance with the License.
-#    You may obtain a copy of the License at
-#
-#        http://www.apache.org/licenses/LICENSE-2.0
-#
-#    Unless required by applicable law or agreed to in writing, software
-#    distributed under the License is distributed on an "AS IS" BASIS,
-#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#    See the License for the specific language governing permissions and
-#    limitations under the License.
 
 
 from typing import List, Optional, Tuple, Union
@@ -26,10 +13,8 @@ from transformers.generation.utils import GenerateOutput
 
 from ..llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
 
-
 class LlavaQwenConfig(Qwen2Config):
     model_type = "llava_qwen"
-
 
 class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
     config_class = LlavaQwenConfig
@@ -37,20 +22,15 @@ class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
     def __init__(self, config: Qwen2Config):
         super(LlavaQwenModel, self).__init__(config)
 
-
 class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
     config_class = LlavaQwenConfig
 
     def __init__(self, config):
         super(Qwen2ForCausalLM, self).__init__(config)
-        # Qwen2ForCausalLM.__init__(self, config)
-        # config.model_type = "llava_qwen"
-        # config.rope_scaling = None
 
         self.model = LlavaQwenModel(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        # Initialize weights and apply final processing
         self.post_init()
 
     def get_model(self):

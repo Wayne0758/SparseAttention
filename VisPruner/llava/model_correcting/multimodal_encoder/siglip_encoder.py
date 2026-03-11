@@ -3,7 +3,6 @@ import torch.nn as nn
 
 from transformers import SiglipVisionModel, SiglipVisionConfig, SiglipImageProcessor
 
-
 class SiglipVisionTower(nn.Module):
     def __init__(self, vision_tower, args, delay_load=False):
         super().__init__()
@@ -32,7 +31,7 @@ class SiglipVisionTower(nn.Module):
         self.is_loaded = True
 
     def feature_select(self, image_forward_outs, output_attentions=False):
-        # return image_forward_outs.hidden_states[:-1], image_forward_outs.attentions
+
         image_features = image_forward_outs.hidden_states[self.select_layer]
         if output_attentions:
             image_attentions = image_forward_outs.attentions[-1]
@@ -49,7 +48,7 @@ class SiglipVisionTower(nn.Module):
                 image_feature = self.feature_select(image_forward_out).to(image.dtype)
                 image_features.append(image_feature)
         else:
-            image_forward_outs = self.vision_tower(images.to(device=self.device, dtype=self.dtype), 
+            image_forward_outs = self.vision_tower(images.to(device=self.device, dtype=self.dtype),
                                                    output_hidden_states=True, output_attentions=output_attentions)
             image_features = self.feature_select(image_forward_outs, output_attentions=output_attentions)
             if not isinstance(image_features, tuple):

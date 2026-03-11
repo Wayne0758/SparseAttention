@@ -1,14 +1,10 @@
-"""
-Usage:
-python3 -m llava.model.consolidate --src ~/model_weights/llava-7b --dst ~/model_weights/llava-7b_consolidate
-"""
+
 import argparse
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from llava.model import *
 from llava.model.utils import auto_upgrade
-
 
 def consolidate_ckpt(src_path, dst_path):
     print("Loading model")
@@ -17,7 +13,6 @@ def consolidate_ckpt(src_path, dst_path):
     src_tokenizer = AutoTokenizer.from_pretrained(src_path, use_fast=False)
     src_model.save_pretrained(dst_path)
     src_tokenizer.save_pretrained(dst_path)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

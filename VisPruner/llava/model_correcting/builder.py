@@ -1,16 +1,3 @@
-#    Copyright 2023 Haotian Liu
-#
-#    Licensed under the Apache License, Version 2.0 (the "License");
-#    you may not use this file except in compliance with the License.
-#    You may obtain a copy of the License at
-#
-#        http://www.apache.org/licenses/LICENSE-2.0
-#
-#    Unless required by applicable law or agreed to in writing, software
-#    distributed under the License is distributed on an "AS IS" BASIS,
-#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#    See the License for the specific language governing permissions and
-#    limitations under the License.
 
 
 import os
@@ -21,7 +8,6 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAn
 import torch
 from llava.model_correcting import *
 from llava.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-
 
 def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", torch_dtype="fp16", use_flash_attn=False, **kwargs):
     kwargs = {"device_map": device_map, **kwargs}
@@ -48,7 +34,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         kwargs['attn_implementation'] = 'flash_attention_2'
 
     if 'llava' in model_name.lower():
-        # Load LLaVA model
+
         if 'lora' in model_name.lower() and model_base is None:
             warnings.warn('There is `lora` in model name but no `model_base` is provided. If you are loading a LoRA model, please provide the `model_base` argument. Detailed instruction: https://github.com/haotian-liu/LLaVA#launch-a-model-worker-lora-weights-unmerged.')
         if 'lora' in model_name.lower() and model_base is not None:
@@ -66,7 +52,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             if os.path.exists(os.path.join(model_path, 'non_lora_trainables.bin')):
                 non_lora_trainables = torch.load(os.path.join(model_path, 'non_lora_trainables.bin'), map_location='cpu')
             else:
-                # this is probably from HF Hub
+
                 from huggingface_hub import hf_hub_download
                 def load_from_hf(repo_id, filename, subfolder=None):
                     cache_file = hf_hub_download(
@@ -87,7 +73,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             model = model.merge_and_unload()
             print('Model is loaded...')
         elif model_base is not None:
-            # this may be mm projector only
+
             print('Loading LLaVA from base model...')
             if 'mpt' in model_name.lower():
                 if not os.path.isfile(os.path.join(model_path, 'configuration_mpt.py')):
@@ -117,9 +103,9 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
                 model = LlavaLlamaForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
     else:
-        # Load language model
+
         if model_base is not None:
-            # PEFT model
+
             from peft import PeftModel
             tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
             model = AutoModelForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, **kwargs)

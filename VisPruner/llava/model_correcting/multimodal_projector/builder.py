@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import re
 
-
 class IdentityMap(nn.Module):
     def __init__(self):
         super().__init__()
@@ -13,7 +12,6 @@ class IdentityMap(nn.Module):
     @property
     def config(self):
         return {"mm_projector_type": 'identity'}
-
 
 class SimpleResBlock(nn.Module):
     def __init__(self, channels):
@@ -28,7 +26,6 @@ class SimpleResBlock(nn.Module):
     def forward(self, x):
         x = self.pre_norm(x)
         return x + self.proj(x)
-
 
 def build_vision_projector(config, delay_load=False, **kwargs):
     projector_type = getattr(config, 'mm_projector_type', 'linear')

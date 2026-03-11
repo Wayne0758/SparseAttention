@@ -1,16 +1,3 @@
-#    Copyright 2023 Haotian Liu
-#
-#    Licensed under the Apache License, Version 2.0 (the "License");
-#    you may not use this file except in compliance with the License.
-#    You may obtain a copy of the License at
-#
-#        http://www.apache.org/licenses/LICENSE-2.0
-#
-#    Unless required by applicable law or agreed to in writing, software
-#    distributed under the License is distributed on an "AS IS" BASIS,
-#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#    See the License for the specific language governing permissions and
-#    limitations under the License.
 
 
 from typing import List, Optional, Tuple, Union
@@ -26,17 +13,14 @@ from transformers.generation.utils import GenerateOutput
 
 from ..llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
 
-
 class LlavaLlamaConfig(LlamaConfig):
     model_type = "llava_llama"
-
 
 class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
     config_class = LlavaLlamaConfig
 
     def __init__(self, config: LlamaConfig):
         super(LlavaLlamaModel, self).__init__(config)
-
 
 class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
     config_class = LlavaLlamaConfig
@@ -48,22 +32,18 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        # [VisPruner] Visual token pruning config
         self.visual_token_num = visual_token_num
         self.important_ratio = important_ratio
         self.pruning_layer = pruning_layer
 
-        # Initialize weights and apply final processing
         self.post_init()
 
     def get_model(self):
         return self.model
 
-    # [VisPruner] Visual token number
     def get_visual_token_num(self):
         return self.visual_token_num
 
-    # [VisPruner] Important ratio
     def get_important_ratio(self):
         return self.important_ratio
 

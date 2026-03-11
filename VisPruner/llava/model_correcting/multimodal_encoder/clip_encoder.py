@@ -3,7 +3,6 @@ import torch.nn as nn
 
 from transformers import CLIPVisionModel, CLIPVisionConfig, CLIPImageProcessor
 
-
 class CLIPVisionTower(nn.Module):
     def __init__(self, vision_tower, args, delay_load=False):
         super().__init__()
@@ -32,7 +31,6 @@ class CLIPVisionTower(nn.Module):
 
         self.is_loaded = True
 
-    # [VisPruner] Select image features and attentions
     def feature_select(self, image_forward_outs, output_attentions=False):
         image_features = image_forward_outs.hidden_states[self.select_layer]
         if output_attentions:
@@ -40,8 +38,7 @@ class CLIPVisionTower(nn.Module):
         if self.select_feature == 'patch':
             image_features = image_features[:, 1:]
             if output_attentions:
-                # Return full head-averaged attention [B, N_seq, N_seq] (includes CLS row/col)
-                # so llava_arch can apply col-norm + CLS-rescue pruning (same as vision_transformer_y.py)
+
                 image_attentions = image_attentions.mean(dim=1)
         elif self.select_feature == 'cls_patch':
             image_features = image_features
@@ -53,7 +50,6 @@ class CLIPVisionTower(nn.Module):
             return image_features, image_attentions
         return image_features
 
-    # [VisPruner] Get image features and attentions
     @torch.no_grad()
     def forward(self, images, output_attentions=False):
         if type(images) is list:
@@ -63,7 +59,7 @@ class CLIPVisionTower(nn.Module):
                 image_feature = self.feature_select(image_forward_out).to(image.dtype)
                 image_features.append(image_feature)
         else:
-            image_forward_outs = self.vision_tower(images.to(device=self.device, dtype=self.dtype), 
+            image_forward_outs = self.vision_tower(images.to(device=self.device, dtype=self.dtype),
                                                    output_hidden_states=True, output_attentions=output_attentions)
             image_features = self.feature_select(image_forward_outs, output_attentions=output_attentions)
             if output_attentions:
@@ -104,8 +100,6 @@ class CLIPVisionTower(nn.Module):
     def num_patches(self):
         return (self.config.image_size // self.config.patch_size) ** 2
 
-
-
 class CLIPVisionTowerS2(CLIPVisionTower):
     def __init__(self, vision_tower, args, delay_load=False):
         super().__init__(vision_tower, args, delay_load)
@@ -122,7 +116,6 @@ class CLIPVisionTowerS2(CLIPVisionTower):
             raise ImportError('Package s2wrapper not found! Please install by running: \npip install git+https://github.com/bfshi/scaling_on_scales.git')
         self.multiscale_forward = multiscale_forward
 
-        # change resize/crop size in preprocessing to the largest image size in s2_scale
         if not delay_load or getattr(args, 'unfreeze_mm_vision_tower', False):
             self.image_processor.size['shortest_edge'] = self.s2_image_size
             self.image_processor.crop_size['height'] = self.image_processor.crop_size['width'] = self.s2_image_size

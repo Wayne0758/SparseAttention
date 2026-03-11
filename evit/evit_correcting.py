@@ -1,32 +1,4 @@
-""" Vision Transformer (ViT) in PyTorch
 
-A PyTorch implement of Vision Transformers as described in:
-
-'An Image Is Worth 16 x 16 Words: Transformers for Image Recognition at Scale'
-    - https://arxiv.org/abs/2010.11929
-
-`How to train your ViT? Data, Augmentation, and Regularization in Vision Transformers`
-    - https://arxiv.org/abs/2106.10270
-
-The official jax code is released and available at https://github.com/google-research/vision_transformer
-
-DeiT model defs and weights from https://github.com/facebookresearch/deit,
-paper `DeiT: Data-efficient Image Transformers` - https://arxiv.org/abs/2012.12877
-
-Acknowledgments:
-* The paper authors for releasing code and weights, thanks!
-* I fixed my class token impl based on Phil Wang's https://github.com/lucidrains/vit-pytorch ... check it out
-for some einops/einsum fun
-* Simple transformer style inspired by Andrej Karpathy's https://github.com/karpathy/minGPT
-* Bert reference code checks against Huggingface Transformers and Tensorflow Bert
-
-Hacked together by / Copyright 2021 Ross Wightman
-
-# ------------------------------------------
-# Modification:
-# Added code for EViT training -- Copyright 2022 Youwei Liang
-
-"""
 import math
 import logging
 from functools import partial
@@ -45,7 +17,6 @@ from helpers import complement_idx
 
 _logger = logging.getLogger(__name__)
 
-
 def _cfg(url='', **kwargs):
     return {
         'url': url,
@@ -55,7 +26,6 @@ def _cfg(url='', **kwargs):
         'first_conv': 'patch_embed.proj', 'classifier': 'head',
         **kwargs
     }
-
 
 default_cfgs = {
     'deit_small_patch16_304': _cfg(
@@ -67,9 +37,7 @@ default_cfgs = {
     'deit_small_patch16_272': _cfg(
         mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD,
         input_size=(3, 272, 272)),
-    # patch models (weights from official Google JAX impl)
 
-    # deit models (FB weights)
     'deit_tiny_patch16_224': _cfg(
         url='https://dl.fbaipublicfiles.com/deit/deit_tiny_patch16_224-a1311bcf.pth',
         mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
@@ -97,30 +65,19 @@ default_cfgs = {
         classifier=('head', 'head_dist')),
 }
 
-
 def drop_path(x, drop_prob: float = 0., training: bool = False):
-    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
 
-    This is the same as the DropConnect impl I created for EfficientNet, etc networks, however,
-    the original name is misleading as 'Drop Connect' is a different form of dropout in a separate paper...
-    See discussion: https://github.com/tensorflow/tpu/issues/494#issuecomment-532968956 ... I've opted for
-    changing the layer and argument names to 'drop path' rather than mix DropConnect as a layer name and use
-    'survival rate' as the argument.
-
-    """
     if drop_prob == 0. or not training:
         return x
     keep_prob = 1 - drop_prob
-    shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
     random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
-    random_tensor.floor_()  # binarize
+    random_tensor.floor_()
     output = x.div(keep_prob) * random_tensor
     return output
 
-
 class DropPath(nn.Module):
-    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
-    """
+
     def __init__(self, drop_prob=None):
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
@@ -128,10 +85,8 @@ class DropPath(nn.Module):
     def forward(self, x):
         return drop_path(x, self.drop_prob, self.training)
 
-
 class Mlp(nn.Module):
-    """ MLP as used in Vision Transformer, MLP-Mixer and related networks
-    """
+
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
         super().__init__()
         out_features = out_features or in_features
@@ -149,10 +104,8 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-
 class PatchEmbed(nn.Module):
-    """ 2D Image to Patch Embedding
-    """
+
     def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768, norm_layer=None, flatten=True):
         super().__init__()
         img_size = to_2tuple(img_size)
@@ -170,10 +123,9 @@ class PatchEmbed(nn.Module):
     def forward(self, x):
         x = self.proj(x)
         if self.flatten:
-            x = x.flatten(2).transpose(1, 2)  # BCHW -> BNC
+            x = x.flatten(2).transpose(1, 2)
         x = self.norm(x)
         return x
-
 
 class Attention(nn.Module):
     def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0., keep_rate=1.):
@@ -194,7 +146,7 @@ class Attention(nn.Module):
             keep_rate = self.keep_rate
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
+        q, k, v = qkv[0], qkv[1], qkv[2]
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
@@ -205,15 +157,15 @@ class Attention(nn.Module):
         x = self.proj_drop(x)
 
         left_tokens = N - 1
-        if self.keep_rate < 1 and keep_rate < 1 or tokens is not None:  # double check the keep rate
+        if self.keep_rate < 1 and keep_rate < 1 or tokens is not None:
             left_tokens = math.ceil(keep_rate * (N - 1))
             if tokens is not None:
                 left_tokens = tokens
             if left_tokens == N - 1:
                 return x, None, None, None, left_tokens
             assert left_tokens >= 1
-            attn_mean = attn.mean(dim=1)  # [B, N, N]
-            c = 0.2  # Rescue Ratio
+            attn_mean = attn.mean(dim=1)
+            c = 0.2
             r = int(left_tokens * c)
 
             B_cur = B
@@ -221,29 +173,25 @@ class Attention(nn.Module):
 
             cls_attn = attn_mean[:, 0, 1:]
             _, cls_idx = torch.topk(cls_attn, left_tokens - r, dim=1, largest=True, sorted=True)
-            
-            col_l2_attn = torch.norm(attn_mean, p=2, dim=1)  # [B, N]
+
+            col_l2_attn = torch.norm(attn_mean, p=2, dim=1)
             col_l2_attn = col_l2_attn / (col_l2_attn.sum(dim=1, keepdim=True) + 1e-6)
-            col_l2_attn = col_l2_attn[:, 1:]  # remove cls token → [B, N_patch]
+            col_l2_attn = col_l2_attn[:, 1:]
 
             presence = torch.zeros(B_cur, N_patch, dtype=torch.bool, device=x.device)
             presence.scatter_(1, cls_idx, True)
 
             scores = torch.where(~presence, col_l2_attn,
                                  torch.full((B_cur, N_patch), float('-inf'), device=x.device))
-            _, col_l2_extra = torch.topk(scores, r, dim=1, largest=True)  # [B, r]
+            _, col_l2_extra = torch.topk(scores, r, dim=1, largest=True)
 
-            # Step 3: concat → [B, left_tokens]
             idx = torch.cat([cls_idx, col_l2_extra], dim=1)
 
-            # cls_idx = torch.zeros(B, 1, dtype=idx.dtype, device=idx.device)
-            # index = torch.cat([cls_idx, idx + 1], dim=1)
-            index = idx.unsqueeze(-1).expand(-1, -1, C)  # [B, left_tokens, C]
+            index = idx.unsqueeze(-1).expand(-1, -1, C)
 
             return x, index, idx, cls_attn, left_tokens
 
         return  x, None, None, None, left_tokens
-
 
 class Block(nn.Module):
 
@@ -254,7 +202,7 @@ class Block(nn.Module):
         self.norm1 = norm_layer(dim)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias,
                               attn_drop=attn_drop, proj_drop=drop, keep_rate=keep_rate)
-        # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
+
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
@@ -265,23 +213,23 @@ class Block(nn.Module):
 
     def forward(self, x, keep_rate=None, tokens=None, get_idx=False):
         if keep_rate is None:
-            keep_rate = self.keep_rate  # this is for inference, use the default keep rate
+            keep_rate = self.keep_rate
         B, N, C = x.shape
 
         tmp, index, idx, col_l2_attn, left_tokens = self.attn(self.norm1(x), keep_rate, tokens)
         x = x + self.drop_path(tmp)
 
         if index is not None:
-            # B, N, C = x.shape
+
             non_cls = x[:, 1:]
-            x_others = torch.gather(non_cls, dim=1, index=index)  # [B, left_tokens, C]
+            x_others = torch.gather(non_cls, dim=1, index=index)
 
             if self.fuse_token:
-                compl = complement_idx(idx, N - 1)  # [B, N-1-left_tokens]
-                non_topk = torch.gather(non_cls, dim=1, index=compl.unsqueeze(-1).expand(-1, -1, C))  # [B, N-1-left_tokens, C]
+                compl = complement_idx(idx, N - 1)
+                non_topk = torch.gather(non_cls, dim=1, index=compl.unsqueeze(-1).expand(-1, -1, C))
 
-                non_topk_attn = torch.gather(col_l2_attn, dim=1, index=compl)  # [B, N-1-left_tokens]
-                extra_token = torch.sum(non_topk * non_topk_attn.unsqueeze(-1), dim=1, keepdim=True)  # [B, 1, C]
+                non_topk_attn = torch.gather(col_l2_attn, dim=1, index=compl)
+                extra_token = torch.sum(non_topk * non_topk_attn.unsqueeze(-1), dim=1, keepdim=True)
                 x = torch.cat([x[:, 0:1], x_others, extra_token], dim=1)
             else:
                 x = torch.cat([x[:, 0:1], x_others], dim=1)
@@ -292,34 +240,13 @@ class Block(nn.Module):
             return x, n_tokens, idx
         return x, n_tokens, None
 
-
 class EViT(nn.Module):
-    """ EViT """
 
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=True, representation_size=None, distilled=False,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0., embed_layer=PatchEmbed, norm_layer=None,
                  act_layer=None, weight_init='', keep_rate=(1, ), fuse_token=False):
-        """
-        Args:
-            img_size (int, tuple): input image size
-            patch_size (int, tuple): patch size
-            in_chans (int): number of input channels
-            num_classes (int): number of classes for classification head
-            embed_dim (int): embedding dimension
-            depth (int): depth of transformer
-            num_heads (int): number of attention heads
-            mlp_ratio (int): ratio of mlp hidden dim to embedding dim
-            qkv_bias (bool): enable bias for qkv if True
-            representation_size (Optional[int]): enable and set representation layer (pre-logits) to this value if set
-            distilled (bool): model includes a distillation token and head as in DeiT models
-            drop_rate (float): dropout rate
-            attn_drop_rate (float): attention dropout rate
-            drop_path_rate (float): stochastic depth rate
-            embed_layer (nn.Module): patch embedding layer
-            norm_layer: (nn.Module): normalization layer
-            weight_init: (str): weight init scheme
-        """
+
         super().__init__()
         self.img_size = img_size
         if len(keep_rate) == 1:
@@ -332,7 +259,7 @@ class EViT(nn.Module):
                 self.first_shrink_idx = i
                 break
         self.num_classes = num_classes
-        self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
+        self.num_features = self.embed_dim = embed_dim
         self.num_tokens = 2 if distilled else 1
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
         act_layer = act_layer or nn.GELU
@@ -346,7 +273,7 @@ class EViT(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + self.num_tokens, embed_dim))
         self.pos_drop = nn.Dropout(p=drop_rate)
 
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
         self.blocks = nn.ModuleList([
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop_rate,
@@ -355,7 +282,6 @@ class EViT(nn.Module):
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
 
-        # Representation layer
         if representation_size and not distilled:
             self.num_features = representation_size
             self.pre_logits = nn.Sequential(OrderedDict([
@@ -365,7 +291,6 @@ class EViT(nn.Module):
         else:
             self.pre_logits = nn.Identity()
 
-        # Classifier head(s)
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
         self.head_dist = None
         if distilled:
@@ -380,14 +305,14 @@ class EViT(nn.Module):
         if self.dist_token is not None:
             trunc_normal_(self.dist_token, std=.02)
         if mode.startswith('jax'):
-            # leave cls token as zeros to match jax impl
+
             named_apply(partial(_init_vit_weights, head_bias=head_bias, jax_impl=True), self)
         else:
             trunc_normal_(self.cls_token, std=.02)
             self.apply(_init_vit_weights)
 
     def _init_weights(self, m):
-        # this fn left here for compat with downstream users
+
         _init_vit_weights(m)
 
     @torch.jit.ignore()
@@ -423,17 +348,15 @@ class EViT(nn.Module):
         assert len(keep_rate) == self.depth
         assert len(tokens) == self.depth
         x = self.patch_embed(x)
-        cls_token = self.cls_token.expand(x.shape[0], -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
+        cls_token = self.cls_token.expand(x.shape[0], -1, -1)
         if self.dist_token is None:
             x = torch.cat((cls_token, x), dim=1)
         else:
             x = torch.cat((cls_token, self.dist_token.expand(x.shape[0], -1, -1), x), dim=1)
 
-        # for input with another resolution, interpolate the positional embedding.
-        # used for finetining a ViT on images with larger size.
         pos_embed = self.pos_embed
         if x.shape[1] != pos_embed.shape[1]:
-            assert h == w  # for simplicity assume h == w
+            assert h == w
             real_pos = pos_embed[:, self.num_tokens:]
             hw = int(math.sqrt(real_pos.shape[1]))
             true_hw = int(math.sqrt(x.shape[1] - self.num_tokens))
@@ -460,9 +383,9 @@ class EViT(nn.Module):
     def forward(self, x, keep_rate=None, tokens=None, get_idx=False):
         x, _, idxs = self.forward_features(x, keep_rate, tokens, get_idx)
         if self.head_dist is not None:
-            x, x_dist = self.head(x[0]), self.head_dist(x[1])  # x must be a tuple
+            x, x_dist = self.head(x[0]), self.head_dist(x[1])
             if self.training and not torch.jit.is_scripting():
-                # during inference, return the average of both classifier predictions
+
                 return x, x_dist
             else:
                 return (x + x_dist) / 2
@@ -472,13 +395,8 @@ class EViT(nn.Module):
             return x, idxs
         return x
 
-
 def _init_vit_weights(module: nn.Module, name: str = '', head_bias: float = 0., jax_impl: bool = False):
-    """ ViT weight initialization
-    * When called without n, head_bias, jax_impl args it will behave exactly the same
-      as my original init for compatibility with prev hparam / downstream use cases (ie DeiT).
-    * When called w/ valid n (module name) and jax_impl=True, will (hopefully) match JAX impl
-    """
+
     if isinstance(module, nn.Linear):
         if name.startswith('head'):
             nn.init.zeros_(module.weight)
@@ -499,7 +417,7 @@ def _init_vit_weights(module: nn.Module, name: str = '', head_bias: float = 0., 
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
     elif jax_impl and isinstance(module, nn.Conv2d):
-        # NOTE conv was left to pytorch default in my original init
+
         lecun_normal_(module.weight)
         if module.bias is not None:
             nn.init.zeros_(module.bias)
@@ -507,11 +425,9 @@ def _init_vit_weights(module: nn.Module, name: str = '', head_bias: float = 0., 
         nn.init.zeros_(module.bias)
         nn.init.ones_(module.weight)
 
-
 @torch.no_grad()
 def _load_weights(model: EViT, checkpoint_path: str, prefix: str = ''):
-    """ Load weights from .npz checkpoints for official Google Brain Flax implementation
-    """
+
     import numpy as np
 
     def _n2p(w, t=True):
@@ -531,7 +447,7 @@ def _load_weights(model: EViT, checkpoint_path: str, prefix: str = ''):
         prefix = 'opt/target/'
 
     if hasattr(model.patch_embed, 'backbone'):
-        # hybrid
+
         backbone = model.patch_embed.backbone
         stem_only = not hasattr(backbone, 'stem')
         stem = backbone if stem_only else backbone.stem
@@ -559,7 +475,7 @@ def _load_weights(model: EViT, checkpoint_path: str, prefix: str = ''):
     model.cls_token.copy_(_n2p(w[f'{prefix}cls'], t=False))
     pos_embed_w = _n2p(w[f'{prefix}Transformer/posembed_input/pos_embedding'], t=False)
     if pos_embed_w.shape != model.pos_embed.shape:
-        pos_embed_w = resize_pos_embed(  # resize pos embedding when different size from pretrained weights
+        pos_embed_w = resize_pos_embed(
             pos_embed_w, model.pos_embed, getattr(model, 'num_tokens', 1), model.patch_embed.grid_size)
     model.pos_embed.copy_(pos_embed_w)
     model.norm.weight.copy_(_n2p(w[f'{prefix}Transformer/encoder_norm/scale']))
@@ -587,10 +503,8 @@ def _load_weights(model: EViT, checkpoint_path: str, prefix: str = ''):
         block.norm2.weight.copy_(_n2p(w[f'{block_prefix}LayerNorm_2/scale']))
         block.norm2.bias.copy_(_n2p(w[f'{block_prefix}LayerNorm_2/bias']))
 
-
 def resize_pos_embed(posemb, posemb_new, num_tokens=1, gs_new=()):
-    # Rescale the grid of position embeddings when loading from state_dict. Adapted from
-    # https://github.com/google-research/vision_transformer/blob/00883dd691c63a6830751563748663526e811cee/vit_jax/checkpoint.py#L224
+
     _logger.info('Resized position embedding: %s to %s', posemb.shape, posemb_new.shape)
     ntok_new = posemb_new.shape[1]
     if num_tokens:
@@ -599,7 +513,7 @@ def resize_pos_embed(posemb, posemb_new, num_tokens=1, gs_new=()):
     else:
         posemb_tok, posemb_grid = posemb[:, :0], posemb[0]
     gs_old = int(math.sqrt(len(posemb_grid)))
-    if not len(gs_new):  # backwards compatibility
+    if not len(gs_new):
         gs_new = [int(math.sqrt(ntok_new))] * 2
     assert len(gs_new) >= 2
     _logger.info('Position embedding grid-size from %s to %s', [gs_old, gs_old], gs_new)
@@ -609,25 +523,23 @@ def resize_pos_embed(posemb, posemb_new, num_tokens=1, gs_new=()):
     posemb = torch.cat([posemb_tok, posemb_grid], dim=1)
     return posemb
 
-
 def checkpoint_filter_fn(state_dict, model):
-    """ convert patch embedding weight from manual patchify + linear proj to conv"""
+
     out_dict = {}
     if 'model' in state_dict:
-        # For deit models
+
         state_dict = state_dict['model']
     for k, v in state_dict.items():
         if 'patch_embed.proj.weight' in k and len(v.shape) < 4:
-            # For old models that I trained prior to conv based patchification
+
             O, I, H, W = model.patch_embed.proj.weight.shape
             v = v.reshape(O, -1, H, W)
         elif k == 'pos_embed' and v.shape != model.pos_embed.shape:
-            # To resize pos embedding when using model at different size from pretrained weights
+
             v = resize_pos_embed(
                 v, model.pos_embed, getattr(model, 'num_tokens', 1), model.patch_embed.grid_size)
         out_dict[k] = v
     return out_dict
-
 
 def _create_evit(variant, pretrained=False, default_cfg=None, **kwargs):
     default_cfg = default_cfg or default_cfgs[variant]
@@ -635,13 +547,11 @@ def _create_evit(variant, pretrained=False, default_cfg=None, **kwargs):
     if kwargs.get('features_only', None):
         raise RuntimeError('features_only not implemented for Vision Transformer models.')
 
-    # NOTE this extra code to support handling of repr size for in21k pretrained models
     default_num_classes = default_cfg['num_classes']
     num_classes = kwargs.get('num_classes', default_num_classes)
     repr_size = kwargs.pop('representation_size', None)
     if repr_size is not None and num_classes != default_num_classes:
-        # Remove representation layer if fine-tuning. This may not always be the desired action,
-        # but I feel better than doing nothing by default for fine-tuning. Perhaps a better interface?
+
         _logger.warning("Removing representation layer for fine-tuning.")
         repr_size = None
 
@@ -654,29 +564,20 @@ def _create_evit(variant, pretrained=False, default_cfg=None, **kwargs):
         **kwargs)
     return model
 
-
 @register_model
 def deit_tiny_patch16_224(pretrained=False, **kwargs):
-    """ DeiT-tiny model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
-    ImageNet-1k weights from https://github.com/facebookresearch/deit.
-    """
+
     model_kwargs = dict(patch_size=16, embed_dim=192, depth=12, num_heads=3, **kwargs)
     model = _create_evit('deit_tiny_patch16_224', pretrained=pretrained, **model_kwargs)
     return model
 
-
 @register_model
 def deit_small_patch16_224(pretrained=False, **kwargs):
-    """ DeiT-small model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
-    ImageNet-1k weights from https://github.com/facebookresearch/deit.
-    """
+
     model_kwargs = dict(patch_size=16, embed_dim=384, depth=12, num_heads=6, **kwargs)
     model = _create_evit('deit_small_patch16_224', pretrained=pretrained, **model_kwargs)
     return model
 
-
-# -------------------------------------------------------------
-# EViT prototype models
 @register_model
 def deit_small_patch16_shrink_base(pretrained=False, base_keep_rate=0.7, drop_loc=(3,6,9), **kwargs):
     keep_rate = [1] * 12
@@ -686,7 +587,6 @@ def deit_small_patch16_shrink_base(pretrained=False, base_keep_rate=0.7, drop_lo
     model_kwargs.update(kwargs)
     model = _create_evit('deit_small_patch16_224', pretrained=pretrained, **model_kwargs)
     return model
-
 
 @register_model
 def deit_base_patch16_shrink_base(pretrained=False, base_keep_rate=0.7, drop_loc=(3,6,9), **kwargs):
@@ -698,9 +598,6 @@ def deit_base_patch16_shrink_base(pretrained=False, base_keep_rate=0.7, drop_loc
     model = _create_evit('deit_base_patch16_224', pretrained=pretrained, **model_kwargs)
     return model
 
-
-# -------------------------------------------------------------
-# Some example EViT models
 @register_model
 def deit_small_patch16_224_shrink_base(pretrained=False, base_keep_rate=0.7, **kwargs):
     model_kwargs = dict(patch_size=16, embed_dim=384, depth=12, num_heads=6,
@@ -743,49 +640,37 @@ def deit_small_patch16_304_shrink05(pretrained=False, base_keep_rate=0.5, **kwar
     model = _create_evit('deit_small_patch16_304', pretrained=pretrained, **model_kwargs)
     return model
 
-
-# -------------------------------------------------------------
 @register_model
 def deit_base_patch16_224(pretrained=False, **kwargs):
-    """ DeiT base model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
-    ImageNet-1k weights from https://github.com/facebookresearch/deit.
-    """
+
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
     model = _create_evit('deit_base_patch16_224', pretrained=pretrained, **model_kwargs)
     return model
 
 @register_model
 def deit_base_patch16_384(pretrained=False, **kwargs):
-    """ DeiT base model @ 384x384 from paper (https://arxiv.org/abs/2012.12877).
-    ImageNet-1k weights from https://github.com/facebookresearch/deit.
-    """
+
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
     model = _create_evit('deit_base_patch16_384', pretrained=pretrained, **model_kwargs)
     return model
 
-# ==========================================
-# ==========================================
-
 default_cfgs['vit_small_patch16_augreg_evit'] = _cfg(
-    mean=IMAGENET_DEFAULT_MEAN, 
+    mean=IMAGENET_DEFAULT_MEAN,
     std=IMAGENET_DEFAULT_STD,
     input_size=(3, 224, 224),
 )
 
 @register_model
 def vit_small_patch16_augreg_evit(pretrained=False, base_keep_rate=0.7, drop_loc=(0), **kwargs):
-    """
-    EViT version of timm/vit_small_patch16_224.augreg_in21k_ft_in1k.
-    Standard ViT architecture without distillation token.
-    """
+
     model_kwargs = dict(
-        patch_size=16, 
-        embed_dim=384, 
-        depth=12, 
-        num_heads=6, 
+        patch_size=16,
+        embed_dim=384,
+        depth=12,
+        num_heads=6,
         distilled=False,
         qkv_bias=True,
-        keep_rate=[1] * 12, 
+        keep_rate=[1] * 12,
         **kwargs
     )
 
@@ -795,7 +680,6 @@ def vit_small_patch16_augreg_evit(pretrained=False, base_keep_rate=0.7, drop_loc
     model = _create_evit('vit_small_patch16_augreg_evit', pretrained=pretrained, **model_kwargs)
     return model
 
-
 default_cfgs['vit_base_patch16_augreg_evit'] = _cfg(
     mean=(0.5, 0.5, 0.5),
     std=(0.5, 0.5, 0.5),
@@ -804,10 +688,7 @@ default_cfgs['vit_base_patch16_augreg_evit'] = _cfg(
 
 @register_model
 def vit_base_patch16_augreg_evit(pretrained=False, base_keep_rate=0.7, drop_loc=(3, 6, 9), **kwargs):
-    """
-    EViT version of timm/vit_base_patch16_224.augreg_in21k_ft_in1k.
-    Standard ViT architecture without distillation token.
-    """
+
     model_kwargs = dict(
         patch_size=16,
         embed_dim=768,

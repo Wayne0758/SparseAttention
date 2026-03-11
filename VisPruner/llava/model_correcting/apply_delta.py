@@ -1,14 +1,10 @@
-"""
-Usage:
-python3 -m fastchat.model.apply_delta --base ~/model_weights/llama-7b --target ~/model_weights/vicuna-7b --delta lmsys/vicuna-7b-delta
-"""
+
 import argparse
 
 import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from llava import LlavaLlamaForCausalLM
-
 
 def apply_delta(base_model_path, target_model_path, delta_path):
     print("Loading base model")
@@ -35,7 +31,6 @@ def apply_delta(base_model_path, target_model_path, delta_path):
     print("Saving target model")
     delta.save_pretrained(target_model_path)
     delta_tokenizer.save_pretrained(target_model_path)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

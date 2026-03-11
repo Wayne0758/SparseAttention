@@ -10,15 +10,12 @@ import warnings
 import math
 from utils import complement_idx
 
-
-
 class Bottleneck(nn.Module):
     expansion = 4
 
     def __init__(self, inplanes, planes, stride=1):
         super().__init__()
 
-        # all conv layers have stride 1. an avgpool is performed after the second convolution when stride > 1
         self.conv1 = nn.Conv2d(inplanes, planes, 1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
 
@@ -35,7 +32,7 @@ class Bottleneck(nn.Module):
         self.stride = stride
 
         if stride > 1 or inplanes != planes * Bottleneck.expansion:
-            # downsampling layer is prepended with an avgpool, and the subsequent convolution has stride 1
+
             self.downsample = nn.Sequential(OrderedDict([
                 ("-1", nn.AvgPool2d(stride)),
                 ("0", nn.Conv2d(inplanes, planes * self.expansion, 1, stride=1, bias=False)),
@@ -57,7 +54,6 @@ class Bottleneck(nn.Module):
         out = self.relu(out)
         return out
 
-
 class AttentionPool2d(nn.Module):
     def __init__(self, spacial_dim: int, embed_dim: int, num_heads: int, output_dim: int = None):
         super().__init__()
@@ -69,9 +65,9 @@ class AttentionPool2d(nn.Module):
         self.num_heads = num_heads
 
     def forward(self, x):
-        x = x.reshape(x.shape[0], x.shape[1], x.shape[2] * x.shape[3]).permute(2, 0, 1)  # NCHW -> (HW)NC
-        x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
-        x = x + self.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
+        x = x.reshape(x.shape[0], x.shape[1], x.shape[2] * x.shape[3]).permute(2, 0, 1)
+        x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)
+        x = x + self.positional_embedding[:, None, :].to(x.dtype)
         x, _ = F.multi_head_attention_forward(
             query=x, key=x, value=x,
             embed_dim_to_check=x.shape[-1],
@@ -94,21 +90,13 @@ class AttentionPool2d(nn.Module):
 
         return x[0]
 
-
 class ModifiedResNet(nn.Module):
-    """
-    A ResNet class that is similar to torchvision's but contains the following changes:
-    - There are now 3 "stem" convolutions as opposed to 1, with an average pool instead of a max pool.
-    - Performs anti-aliasing strided convolutions, where an avgpool is prepended to convolutions with stride > 1
-    - The final pooling layer is a QKV attention instead of an average pool
-    """
 
     def __init__(self, layers, output_dim, heads, input_resolution=224, width=64):
         super().__init__()
         self.output_dim = output_dim
         self.input_resolution = input_resolution
 
-        # the 3-layer stem
         self.conv1 = nn.Conv2d(3, width // 2, kernel_size=3, stride=2, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(width // 2)
         self.conv2 = nn.Conv2d(width // 2, width // 2, kernel_size=3, padding=1, bias=False)
@@ -118,14 +106,13 @@ class ModifiedResNet(nn.Module):
         self.avgpool = nn.AvgPool2d(2)
         self.relu = nn.ReLU(inplace=True)
 
-        # residual layers
-        self._inplanes = width  # this is a *mutable* variable used during construction
+        self._inplanes = width
         self.layer1 = self._make_layer(width, layers[0])
         self.layer2 = self._make_layer(width * 2, layers[1], stride=2)
         self.layer3 = self._make_layer(width * 4, layers[2], stride=2)
         self.layer4 = self._make_layer(width * 8, layers[3], stride=2)
 
-        embed_dim = width * 32  # the ResNet feature dimension
+        embed_dim = width * 32
         self.attnpool = AttentionPool2d(input_resolution // 32, embed_dim, heads, output_dim)
 
     def _make_layer(self, planes, blocks, stride=1):
@@ -154,20 +141,16 @@ class ModifiedResNet(nn.Module):
 
         return x
 
-
 class LayerNorm(nn.LayerNorm):
-    """Subclass torch's LayerNorm to handle fp16."""
 
     def forward(self, x: torch.Tensor):
         orig_type = x.dtype
         ret = super().forward(x.type(torch.float32))
         return ret.type(orig_type)
 
-
 class QuickGELU(nn.Module):
     def forward(self, x: torch.Tensor):
         return x * torch.sigmoid(1.702 * x)
-
 
 class ResidualAttentionBlock(nn.Module):
     def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None):
@@ -192,13 +175,12 @@ class ResidualAttentionBlock(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
-
 class ResidualAttentionBlock_EViT(nn.Module):
     def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None, drop_rate: float = 0.5):
         super().__init__()
 
         self.attn = nn.MultiheadAttention(d_model, n_head)
-        # self.new_attn = MultiheadAttention(d_model, n_head)
+
         self.ln_1 = LayerNorm(d_model)
         self.mlp = nn.Sequential(OrderedDict([
             ("c_fc", nn.Linear(d_model, d_model * 4)),
@@ -215,38 +197,33 @@ class ResidualAttentionBlock_EViT(nn.Module):
         return x, attn_weights
 
     def forward(self, x: torch.Tensor, drop_rate=None, cls_token_cache: torch.Tensor = None, layer=None):
-        
+
         N, B, C = x.shape
         cache_attn_weights = None
-        # calculate how many tokens to keep
+
         if drop_rate > 0:
-            
-           
+
             left_tokens = math.ceil((1 - drop_rate) * (N - 1))
             assert left_tokens >= 1
-           
-                   
-            
+
             tmp, attn_weights = self.attention(self.ln_1(x))
             x = x + tmp
-            
-            cls_attn = attn_weights[:, :, 0, 1:]  # [B, H, N-1]
-            cls_attn = cls_attn.mean(dim=1)  # [B, N-1]
-            
-            _, idx = torch.topk(cls_attn, left_tokens, dim=1, largest=True, sorted=True)  # [B, left_tokens]
-            index = idx.unsqueeze(-1).expand(-1, -1, C)  # [B, left_tokens, C]
 
-            # extract non-[cls] tokens
+            cls_attn = attn_weights[:, :, 0, 1:]
+            cls_attn = cls_attn.mean(dim=1)
+
+            _, idx = torch.topk(cls_attn, left_tokens, dim=1, largest=True, sorted=True)
+            index = idx.unsqueeze(-1).expand(-1, -1, C)
+
             non_cls = x[1:, :, :]
-            index = index.permute(1, 0, 2) # [left_tokens, B, C]
-            x_others = torch.gather(non_cls, dim=0, index=index)  # [left_tokens, B, C]
+            index = index.permute(1, 0, 2)
+            x_others = torch.gather(non_cls, dim=0, index=index)
 
-            # fuse nonimportant tokens
-            compl = complement_idx(idx, N - 1)  # [B, N-1-left_tokens]
-            non_topk = torch.gather(non_cls, dim=0, index=compl.unsqueeze(-1).expand(-1, -1, C).permute(1, 0, 2))  # [N-1-left_tokens, B, C]
+            compl = complement_idx(idx, N - 1)
+            non_topk = torch.gather(non_cls, dim=0, index=compl.unsqueeze(-1).expand(-1, -1, C).permute(1, 0, 2))
 
-            non_topk_attn = torch.gather(cls_attn, dim=1, index=compl).permute(1, 0)  # [N-1-left_tokens, B]
-            extra_token = torch.sum(non_topk * non_topk_attn.unsqueeze(-1), dim=0, keepdim=True)  # [1, B, C]
+            non_topk_attn = torch.gather(cls_attn, dim=1, index=compl).permute(1, 0)
+            extra_token = torch.sum(non_topk * non_topk_attn.unsqueeze(-1), dim=0, keepdim=True)
             x = torch.cat([x[:1, :, :], x_others, extra_token], dim=0)
 
             n_tokens = x.shape[0] - 1
@@ -259,14 +236,12 @@ class ResidualAttentionBlock_EViT(nn.Module):
         else:
             raise NotImplementedError
 
-
-        
 class ResidualAttentionBlock_Ours(nn.Module):
     def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None, drop_rate: float = 0.5):
         super().__init__()
 
         self.attn = nn.MultiheadAttention(d_model, n_head)
-       
+
         self.ln_1 = LayerNorm(d_model)
         self.mlp = nn.Sequential(OrderedDict([
             ("c_fc", nn.Linear(d_model, d_model * 4)),
@@ -287,59 +262,58 @@ class ResidualAttentionBlock_Ours(nn.Module):
         N, B, C = x.shape
         cache_attn_weights = None
         cls_attn_weights = None
-        # calculate how many tokens to keep
-        if drop_rate > 0:   
+
+        if drop_rate > 0:
             left_tokens = math.ceil((1 - drop_rate) * (N - 1))
-            merged_tokens = N - left_tokens  # 7
+            merged_tokens = N - left_tokens
             assert left_tokens >= 1
             if cls_token_cache is not None:
                 num_cls = cls_token_cache.shape[0]
-                
+
                 max_token_cls = torch.argmax(F.cosine_similarity(cls_token_cache.unsqueeze(1), x[:1, :, :], dim=2), dim=0)
                 tmp, attn_weights = self.attention(self.ln_1(torch.cat((cls_token_cache[max_token_cls].unsqueeze(0), x), dim=0)))
                 tmp, attn_weights = tmp[1:, :, :], attn_weights[:, :, 1:, 1:]
-                    
+
             else:
                 tmp, attn_weights = self.attention(self.ln_1(x))
             x = x + tmp
-            
+
             col_ln_attn = attn_weights.mean(dim=1)
-            col_ln_attn = torch.norm(col_ln_attn, p=4, dim=1) # [B, N]
+            col_ln_attn = torch.norm(col_ln_attn, p=4, dim=1)
             col_ln_attn = col_ln_attn / (col_ln_attn.sum(dim=1, keepdim=True) + 1e-6)
-            col_ln_attn = col_ln_attn[:, 1:]  # [B, H, N-1]
-            
-            
-            _, idx = torch.topk(col_ln_attn, (left_tokens-2*merged_tokens), dim=1, largest=True, sorted=True)  
-            
+            col_ln_attn = col_ln_attn[:, 1:]
+
+            _, idx = torch.topk(col_ln_attn, (left_tokens-2*merged_tokens), dim=1, largest=True, sorted=True)
+
             _, idx1 = torch.topk(col_ln_attn, (left_tokens), dim=1, largest=True, sorted=True)
-            
+
             cluster_idx = idx1[:, idx.shape[1]:]
-            
-            index = idx.unsqueeze(-1).expand(-1, -1, C)  # [B, left_tokens, C]
-            cluster_index = cluster_idx.unsqueeze(-1).expand(-1, -1, C) # 1, 40, 768
+
+            index = idx.unsqueeze(-1).expand(-1, -1, C)
+            cluster_index = cluster_idx.unsqueeze(-1).expand(-1, -1, C)
             non_cls = x[1:, :, :]
-            index = index.permute(1, 0, 2) # [left_tokens, B, C]
+            index = index.permute(1, 0, 2)
             cluster_index = cluster_index.permute(1, 0, 2)
-            x_others = torch.gather(non_cls, dim=0, index=index)  
-            x_cluster = torch.gather(non_cls, dim=0, index=cluster_index) 
-            
+            x_others = torch.gather(non_cls, dim=0, index=index)
+            x_cluster = torch.gather(non_cls, dim=0, index=cluster_index)
+
             merged_tokens = coreset_averaging(x_cluster, num_centers=4)
             if len(merged_tokens.shape) == 3:
                 merged_tokens = merged_tokens.half()
             else:
                 merged_tokens = merged_tokens.unsqueeze(1).half()
-           
-            compl = complement_idx(idx1, N - 1)  
-            non_topk = torch.gather(non_cls, dim=0, index=compl.unsqueeze(-1).expand(-1, -1, C).permute(1, 0, 2))  
 
-            non_topk_attn = torch.gather(col_ln_attn, dim=1, index=compl).permute(1, 0)  
-            extra_token = torch.sum(non_topk * non_topk_attn.unsqueeze(-1), dim=0, keepdim=True)  
+            compl = complement_idx(idx1, N - 1)
+            non_topk = torch.gather(non_cls, dim=0, index=compl.unsqueeze(-1).expand(-1, -1, C).permute(1, 0, 2))
+
+            non_topk_attn = torch.gather(col_ln_attn, dim=1, index=compl).permute(1, 0)
+            extra_token = torch.sum(non_topk * non_topk_attn.unsqueeze(-1), dim=0, keepdim=True)
             x = torch.cat([x[:1, :, :], x_others, merged_tokens, extra_token], dim=0)
 
             return x + self.mlp(self.ln_2(x)), idx
         elif drop_rate == 0:
             if cls_token_cache is not None and layer in [3, 6, 9]:
-                
+
                 if max_token_cls is not None:
                     max_token_cls = torch.argmax(F.cosine_similarity(cls_token_cache.unsqueeze(1), x[:1, :, :], dim=2), dim=0)
                     tmp, attn_weights = self.attention(self.ln_1(torch.cat((cls_token_cache[max_token_cls].unsqueeze(0), x), dim=0)))
@@ -347,21 +321,20 @@ class ResidualAttentionBlock_Ours(nn.Module):
                 else:
                     tmp, attn_weights = self.attention(self.ln_1(x))
                 x = x + tmp
-                
+
             else:
                 x = x + self.attention(self.ln_1(x), average_attn_weights=True)[0]
             x = x + self.mlp(self.ln_2(x))
-            return x, torch.tensor(range(N)).view(1, N).cuda() 
+            return x, torch.tensor(range(N)).view(1, N).cuda()
         else:
             raise NotImplementedError
-        
 
 class ResidualAttentionBlock_ToME(nn.Module):
     def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None, drop_R: int = 8):
         super().__init__()
 
         self.attn = MultiheadAttention_ToME(d_model, n_head)
-        
+
         self.ln_1 = LayerNorm(d_model)
         self.mlp = nn.Sequential(OrderedDict([
             ("c_fc", nn.Linear(d_model, d_model * 4)),
@@ -373,15 +346,14 @@ class ResidualAttentionBlock_ToME(nn.Module):
         self.drop_R = drop_R
 
     def forward(self, x: torch.Tensor, drop_R: int = 8, size: torch.Tensor = None, vis_mask: bool = False, source: torch.Tensor = None, cls_token_cache = None):
-        
+
         N, B, C = x.shape
         new_source = source
-        # calculate how many tokens to keep
+
         if drop_R > 0:
             tmp, attn_weights = self.attn(self.ln_1(x), self.ln_1(x), self.ln_1(x), need_weights=True, attn_mask=self.attn_mask, average_attn_weights=True)
             x = x + tmp
 
-            # sanity check
             left_tokens = N - 1 - drop_R
             assert left_tokens >= 1
 
@@ -393,7 +365,7 @@ class ResidualAttentionBlock_ToME(nn.Module):
             )
             if vis_mask:
                 new_source = merge_source(merge, x, source)
-            new_x, new_size = merge_wavg(merge, x, size) #new_x: B, N, C
+            new_x, new_size = merge_wavg(merge, x, size)
             new_x, new_size = new_x.permute(1, 0, 2), new_size.permute(1, 0, 2)
             x = new_x + self.mlp(self.ln_2(new_x))
             return x, new_size, new_source
@@ -403,7 +375,6 @@ class ResidualAttentionBlock_ToME(nn.Module):
             return x, size, new_source
         else:
             raise NotImplementedError
-                
 
 class Transformer(nn.Module):
     def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None):
@@ -432,9 +403,9 @@ class Transformer_drop(nn.Module):
         self.dpr = dpr
 
     def forward(self, x: torch.Tensor, vis_mask: bool = False, cls_token_cache: torch.Tensor = None):
-        
-        size, source = None, None 
-        cls_token_list = torch.zeros((self.layers, x.shape[-1]))  
+
+        size, source = None, None
+        cls_token_list = torch.zeros((self.layers, x.shape[-1]))
         if vis_mask:
             left_tokens_idxs = []
             source_list = []
@@ -460,7 +431,6 @@ class Transformer_drop(nn.Module):
             return x, source_list, cls_token_list
         else:
             raise NotImplementedError
-        
 
 class VisionTransformer(nn.Module):
     def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int, token_pruning: str):
@@ -474,10 +444,8 @@ class VisionTransformer(nn.Module):
         self.positional_embedding = nn.Parameter(scale * torch.randn((input_resolution // patch_size) ** 2 + 1, width))
         self.ln_pre = LayerNorm(width)
 
-        # consider token pruning
         self.token_pruning_name, self.drop_rate = token_pruning.split('-')[0], float(token_pruning.split('-')[1])
 
-        # init cls token cache
         self.cls_token_cache = None
         self.drop_loc = [3, 6, 9]
         if self.token_pruning_name == 'EViT' or self.token_pruning_name == 'Ours':
@@ -492,42 +460,39 @@ class VisionTransformer(nn.Module):
             self.transformer = Transformer_drop(width, layers, heads, dpr=dpr, token_pruning_name=self.token_pruning_name)
         else:
             raise NotImplementedError
-        
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
 
     def forward(self, x: torch.Tensor, vis_mask: bool = False):
-        x = self.conv1(x)  
-        x = x.reshape(x.shape[0], x.shape[1], -1)  
-        x = x.permute(0, 2, 1)  
-        x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+        x = self.conv1(x)
+        x = x.reshape(x.shape[0], x.shape[1], -1)
+        x = x.permute(0, 2, 1)
+        x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)
         x = x + self.positional_embedding.to(x.dtype)
         x = self.ln_pre(x)
 
-        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = x.permute(1, 0, 2)
 
-       
         x, idx, cls_token_list = self.transformer(x, vis_mask, cls_token_cache=self.cls_token_cache)
-        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = x.permute(1, 0, 2)
 
         x = self.ln_post(x[:, 0, :])
 
         if self.proj is not None:
             x = x @ self.proj
-        
-        return x, idx, cls_token_list if vis_mask else x, cls_token_list
 
+        return x, idx, cls_token_list if vis_mask else x, cls_token_list
 
 class CLIP(nn.Module):
     def __init__(self,
                  embed_dim: int,
-                 # vision
+
                  image_resolution: int,
                  vision_layers: Union[Tuple[int, int, int, int], int],
                  vision_width: int,
                  vision_patch_size: int,
-                 # text
+
                  context_length: int,
                  vocab_size: int,
                  transformer_width: int,
@@ -607,11 +572,10 @@ class CLIP(nn.Module):
             nn.init.normal_(self.text_projection, std=self.transformer.width ** -0.5)
 
     def build_attention_mask(self):
-        # lazily create causal attention mask, with full attention between the vision tokens
-        # pytorch uses additive attention mask; fill with -inf
+
         mask = torch.empty(self.context_length, self.context_length)
         mask.fill_(float("-inf"))
-        mask.triu_(1)  # zero out the lower diagonal
+        mask.triu_(1)
         return mask
 
     @property
@@ -622,17 +586,17 @@ class CLIP(nn.Module):
         return self.visual(image.type(self.dtype), vis_mask=vis_mask)
 
     def encode_text(self, text):
-        x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
+        x = self.token_embedding(text).type(self.dtype)
 
         x = x + self.positional_embedding.type(self.dtype)
-        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = x.permute(1, 0, 2)
         x = self.transformer(x)
-        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = x.permute(1, 0, 2)
         x = self.ln_final(x).type(self.dtype)
         x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
 
         return x
-    
+
     def update_cls_token(self, cache):
         mean_tensors = []
         for key in cache:
@@ -645,21 +609,16 @@ class CLIP(nn.Module):
         image_features = self.encode_image(image)
         text_features = self.encode_text(text)
 
-        # normalized features
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
-        # cosine similarity as logits
         logit_scale = self.logit_scale.exp()
         logits_per_image = logit_scale * image_features @ text_features.t()
         logits_per_text = logits_per_image.t()
 
-        # shape = [global_batch_size, global_batch_size]
         return logits_per_image, logits_per_text
 
-
 def convert_weights(model: nn.Module):
-    """Convert applicable model parameters to fp16"""
 
     def _convert_weights_to_fp16(l):
         if isinstance(l, (nn.Conv1d, nn.Conv2d, nn.Linear)):
@@ -680,7 +639,6 @@ def convert_weights(model: nn.Module):
                     attr.data = attr.data.half()
 
     model.apply(_convert_weights_to_fp16)
-
 
 def build_model(state_dict: dict, token_pruning: str):
     vit = "visual.proj" in state_dict

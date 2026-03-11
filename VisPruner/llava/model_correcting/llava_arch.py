@@ -1,16 +1,3 @@
-#    Copyright 2023 Haotian Liu
-#
-#    Licensed under the Apache License, Version 2.0 (the "License");
-#    you may not use this file except in compliance with the License.
-#    You may obtain a copy of the License at
-#
-#        http://www.apache.org/licenses/LICENSE-2.0
-#
-#    Unless required by applicable law or agreed to in writing, software
-#    distributed under the License is distributed on an "AS IS" BASIS,
-#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#    See the License for the specific language governing permissions and
-#    limitations under the License.
 
 
 from abc import ABC, abstractmethod
@@ -18,29 +5,22 @@ from abc import ABC, abstractmethod
 import torch
 import torch.nn as nn
 
-
 def fast_select_k_least_changed_tokens_col(
-    residual: torch.Tensor,   # [B, N, N]
+    residual: torch.Tensor,
     k: int,
     *,
     exclude_cls: bool = True,
 ):
     B, N, _ = residual.shape
-    change = torch.norm(residual, p=4, dim=1)  # [B, N] col L4 norms
+    change = torch.norm(residual, p=4, dim=1)
     if exclude_cls:
         change[:, 0] = float('inf')
     k_eff = N - min(k, N - int(exclude_cls))
     _, keep_idx = torch.topk(change, k_eff, dim=1)
     return keep_idx
 
-
 def fast_prune_by_keep_idx(x: torch.Tensor, keep_idx: torch.Tensor):
-    """
-    x:        [B, N, C]
-    keep_idx: [B, K]
-    return:
-      x_kept: [B, K, C]
-    """
+
     B, N, C = x.shape
     index = keep_idx.unsqueeze(-1).expand(-1, -1, C)
     return x.gather(dim=1, index=index)
@@ -51,7 +31,6 @@ from .multimodal_projector.builder import build_vision_projector
 from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
 from llava.mm_utils import get_anyres_image_grid_shape
-
 
 class LlavaMetaModel:
 
@@ -112,7 +91,7 @@ class LlavaMetaModel:
                     torch.randn(self.config.hidden_size, dtype=self.dtype) * embed_std
                 )
         else:
-            # In case it is frozen by LoRA
+
             for p in self.mm_projector.parameters():
                 p.requires_grad = True
 
@@ -123,18 +102,8 @@ class LlavaMetaModel:
 
             self.mm_projector.load_state_dict(get_w(mm_projector_weights, 'mm_projector'))
 
-
 def unpad_image(tensor, original_size):
-    """
-    Unpads a PyTorch tensor of a padded and resized image.
 
-    Args:
-    tensor (torch.Tensor): The image tensor, assumed to be in CxHxW format.
-    original_size (tuple): The original size of PIL image (width, height).
-
-    Returns:
-    torch.Tensor: The unpadded image tensor.
-    """
     original_width, original_height = original_size
     current_height, current_width = tensor.shape[1:]
 
@@ -154,7 +123,6 @@ def unpad_image(tensor, original_size):
 
     return unpadded_tensor
 
-
 class LlavaMetaForCausalLM(ABC):
 
     @abstractmethod
@@ -164,78 +132,66 @@ class LlavaMetaForCausalLM(ABC):
     def get_vision_tower(self):
         return self.get_model().get_vision_tower()
 
-    # [VisPruner] Generate index masks using visual cues
     def encode_images(self, images):
-        # image_features: [B, N, C]  (patch tokens, CLS removed)
-        # image_attentions: [B, N_seq, N_seq]  head-averaged full attention (N_seq = N + 1)
+
         image_features, image_attentions = self.get_model().get_vision_tower()(images, output_attentions=True)
 
         B, N, C = image_features.shape
         device = image_features.device
         index_masks = torch.ones(B, N, dtype=torch.bool, device=device)
 
-        visual_token_num = self.get_visual_token_num()  # T
-        important_ratio = self.get_important_ratio()    # r
-        important_token_num = int(visual_token_num * important_ratio)  # T_imp = T * r
-        diverse_token_num = visual_token_num - important_token_num     # T_div = T * (1 - r)
-        # CLS-rescue count within the important selection (mirrors vision_transformer_y.py's r)
-        c = 0.2 # Rescue Ratio
+        visual_token_num = self.get_visual_token_num()
+        important_ratio = self.get_important_ratio()
+        important_token_num = int(visual_token_num * important_ratio)
+        diverse_token_num = visual_token_num - important_token_num
+
+        c = 0.2
         r_rescue = int(important_token_num * c)
 
-        # ── [VisPruner] Select important tokens: CLS first, col-norm second ─────────────────
-        # image_attentions: [B, N_seq, N_seq], N_seq = N + 1  (position 0 = CLS)
-
-        # Step 1: CLS attention selects (important_token_num - r_rescue) patch tokens
-        cls_row = image_attentions[:, 0, 1:]  # [B, N]  CLS → patch attention
+        cls_row = image_attentions[:, 0, 1:]
         _, cls_idx = torch.topk(cls_row, important_token_num - r_rescue, dim=1, largest=True)
 
-        # Step 2: col-norm selects r_rescue patch tokens from remaining (r_rescue applied to col)
-        col_change = torch.norm(image_attentions, p=4, dim=1)[:, 1:]  # [B, N] col L4 norm (CLS removed)
+        col_change = torch.norm(image_attentions, p=4, dim=1)[:, 1:]
         cls_presence = torch.zeros(B, N, dtype=torch.bool, device=device)
         cls_presence.scatter_(1, cls_idx, True)
         col_scores = torch.where(~cls_presence, col_change,
                                  torch.full((B, N), float('-inf'), device=device))
         _, col_extra = torch.topk(col_scores, r_rescue, dim=1, largest=True)
 
-        # Combined important_indices: [B, T_imp]
         important_indices = torch.cat([cls_idx, col_extra], dim=1)
-        # ─────────────────────────────────────────────────────────────────────────────────
 
-        # Residual: all patch tokens NOT in important_indices → [B, N - T_imp]
         imp_mask = torch.zeros(B, N, dtype=torch.bool, device=device)
         imp_mask.scatter_(1, important_indices, True)
         residual_indices = (~imp_mask).nonzero()[:, 1].view(B, N - important_token_num)
 
-        # [VisPruner] Remove duplicate tokens by iterative matching and pruning (UNCHANGED)
-        image_normalized = image_features / image_features.norm(dim=-1, keepdim=True) # (B, N, C)
+        image_normalized = image_features / image_features.norm(dim=-1, keepdim=True)
         while diverse_token_num > 0:
             R = residual_indices.shape[1]
             r = min(8, R - diverse_token_num)
             if r <= 0:
                 break
 
-            residual_tokens = image_normalized[torch.arange(B).unsqueeze(-1).expand(-1, R), residual_indices] # (B, R, C)
-            a, b = residual_tokens[..., ::2, :], residual_tokens[..., 1::2, :] # (B, R // 2, C)
-            scores = a @ b.transpose(-1, -2) # (B, R // 2, R // 2)
-            scores = scores.max(dim=-1).values # (B, R // 2)
+            residual_tokens = image_normalized[torch.arange(B).unsqueeze(-1).expand(-1, R), residual_indices]
+            a, b = residual_tokens[..., ::2, :], residual_tokens[..., 1::2, :]
+            scores = a @ b.transpose(-1, -2)
+            scores = scores.max(dim=-1).values
 
-            distinct_indices = scores.argsort(dim=-1, descending=True)[:, r:] # (B, R // 2 - r)
+            distinct_indices = scores.argsort(dim=-1, descending=True)[:, r:]
             residual_indices = torch.cat([
                 residual_indices[..., ::2][torch.arange(B).unsqueeze(-1).expand(-1, R // 2 - r), distinct_indices],
                 residual_indices[..., 1::2]
-            ], dim=-1) # (B, R - r)
+            ], dim=-1)
 
         if diverse_token_num > 0:
-            selected_indices = torch.cat([important_indices, residual_indices], dim=-1) # (B, T)
+            selected_indices = torch.cat([important_indices, residual_indices], dim=-1)
         else:
-            selected_indices = important_indices # (B, T)
+            selected_indices = important_indices
         index_masks = torch.zeros(B, N, dtype=torch.bool, device=device)
         index_masks.scatter_(1, selected_indices, True)
 
         image_features = self.get_model().mm_projector(image_features)
         return image_features, index_masks
 
-    # [VisPruner] Prune visual tokens according to index masks
     def prepare_inputs_labels_for_multimodal(
         self, input_ids, position_ids, attention_mask, past_key_values, labels,
         images, modalities=["image"], image_sizes=None
@@ -244,7 +200,6 @@ class LlavaMetaForCausalLM(ABC):
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
             return input_ids, position_ids, attention_mask, past_key_values, None, labels
 
-        # [VisPruner] Prune visual tokens
         if type(images) is list or images.ndim == 5:
             if type(images) is list:
                 images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
@@ -321,14 +276,9 @@ class LlavaMetaForCausalLM(ABC):
             image_features, index_masks = self.encode_images(images)
             image_features = image_features[index_masks].unsqueeze(0)
 
-        # TODO: image start / end is not implemented here to support pretraining.
         if getattr(self.config, 'tune_mm_mlp_adapter', False) and getattr(self.config, 'mm_use_im_start_end', False):
             raise NotImplementedError
 
-        # Let's just add dummy tensors if they do not exist,
-        # it is a headache to deal with None all the time.
-        # But it is not ideal, and if you have a better idea,
-        # please open an issue / submit a PR, thanks.
         _labels = labels
         _position_ids = position_ids
         _attention_mask = attention_mask
@@ -341,7 +291,6 @@ class LlavaMetaForCausalLM(ABC):
         if labels is None:
             labels = torch.full_like(input_ids, IGNORE_INDEX)
 
-        # remove the padding using attention_mask -- FIXME
         _input_ids = input_ids
         input_ids = [cur_input_ids[cur_attention_mask] for cur_input_ids, cur_attention_mask in zip(input_ids, attention_mask)]
         labels = [cur_labels[cur_attention_mask] for cur_labels, cur_attention_mask in zip(labels, attention_mask)]
@@ -390,13 +339,11 @@ class LlavaMetaForCausalLM(ABC):
             new_input_embeds.append(cur_new_input_embeds)
             new_labels.append(cur_new_labels)
 
-        # Truncate sequences to max length as image embeddings can make the sequence longer
         tokenizer_model_max_length = getattr(self.config, 'tokenizer_model_max_length', None)
         if tokenizer_model_max_length is not None:
             new_input_embeds = [x[:tokenizer_model_max_length] for x in new_input_embeds]
             new_labels = [x[:tokenizer_model_max_length] for x in new_labels]
 
-        # Combine them
         max_len = max(x.shape[0] for x in new_input_embeds)
         batch_size = len(new_input_embeds)
 
